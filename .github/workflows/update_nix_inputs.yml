@@ -1,0 +1,65 @@
+on:
+  workflow_call:
+    secrets:
+      TOKEN:
+        description: Personal Access Token
+        required: true
+    inputs:
+      config_path:
+        description: Path to nvfetcher TOML config
+        required: false
+        type: string
+      build_dir:
+        description: Directory that nvfetcher puts artifacts to
+        required: false
+        default: "_sources"
+        type: string
+env:
+  nixPath: nixpkgs=channel:nixos-22.05
+  workDir: './update_nix'
+jobs:
+  update_inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          path: ${{ env.workDir }}
+      - name: Install nix
+        uses: cachix/install-nix-action@v17
+        with:
+          nix_path: "${{ env.nixPath }}"
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://slaier.cachix.org https://cache.nixos.org
+            trusted-public-keys = slaier.cachix.org-1:NyXPOqlxuGWgyn0ApNHMopkbix3QjMUAcR+JOjjxLtU= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+      - name: Update flake lock
+        working-directory: ${{ env.workDir }}
+        run: |
+          if [ -e flake.nix ]; then
+            nix flake update
+            git add flake.lock
+          fi
+      - name: Update nvfetcher sources
+        working-directory: ${{ env.workDir }}
+        if: inputs.config_path != ''
+        run: |
+          config_file=${{ inputs.config_path }}
+          build_dir=${{ inputs.build_dir }}
+          nix shell nixpkgs#nvfetcher -c nvfetcher -c "$config_file" -o "$build_dir"
+          git add "$build_dir"
+      - name: Create pull request
+        working-directory: ${{ env.workDir }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+        run: |
+          git config user.name "dependabot[bot]"
+          git config user.email "<49699333+dependabot[bot]@users.noreply.github.com>"
+          git commit -m 'inputs: update dependencies'
+          rev=${{ github.sha }}
+          branch_name="dependabot/nix/update-inputs-${rev::7}"
+          git checkout --force -B "$branch_name"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY
+          git push -u origin "$branch_name" && gh pr create --title "inputs: update dependencies" --body "update nix inputs" || git push origin -f
+
